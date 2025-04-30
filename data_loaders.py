@@ -4,6 +4,8 @@ from timeit import default_timer as timer
 import awkward as ak
 # import numpy as np
 
+import math
+
 import torch
 import torch.nn as nn
 
@@ -237,18 +239,34 @@ class RootPvtxIndexFull_Multiple_Files_3DPoint_NestedTensor(Dataset):
         #self.sampleIn = torch.zeros([length, 150])
         # self.sampleOut = torch.zeros([len(self.Br_inputs), self.totOut_dim])
 
-
-
-        arr=ak.to_list(self.Br_inputs)
         values_only = []
-        for event in arr:
-            temp_list=list(event.values())
-            dim_list = len(temp_list)
-            temp_val = []
-            for i_e in range(dim_list//3):
-                temp_val.append(list(zip(temp_list[i_e*3],temp_list[i_e*3+1],temp_list[i_e*3+2])))
+        if len(self.MLOut) > 1:
+            arr_out = ak.to_list(self.Br_outputs[:][self.MLOut[0:3]])
+            arr=ak.to_list(self.Br_inputs)
+            for event, event_out in zip(arr,arr_out):
+                temp_list=list(event.values())
+                temp_list_out = list(event_out.values())
+                tempXout = temp_list_out[0]
+                tempYout = temp_list_out[1]
+                dim_list = len(temp_list)
+                temp_val = []
+                for i_e in range(dim_list//3):
+                    tempX = np.array(temp_list[i_e*3]) - tempXout
+                    tempY = np.array(temp_list[i_e*3+1]) - tempYout
 
-            values_only.append(temp_val)
+                    temp_val.append(list(zip(tempX.tolist(),tempY.tolist(),temp_list[i_e*3+2])))
+                    values_only.append(temp_val)
+
+        else:
+            arr=ak.to_list(self.Br_inputs)
+            for event in arr:
+                temp_list=list(event.values())
+                dim_list = len(temp_list)
+                temp_val = []
+                for i_e in range(dim_list//3):
+                    temp_val.append(list(zip(temp_list[i_e*3],temp_list[i_e*3+1],temp_list[i_e*3+2])))
+                    values_only.append(temp_val)
+
 
         self.lengths = np.array([
             [len(sublist) for sublist in event]  # Lengths for each event
@@ -294,6 +312,138 @@ class RootPvtxIndexFull_Multiple_Files_3DPoint_NestedTensor(Dataset):
         return [[self.sampleIn[idx], self.sampleInPos[idx]], self.sampleOut[idx]]
 
 
+class RootPvtxIndexFull_Multiple_Files_3DPointInAndOut_NestedTensor(Dataset):
+    """
+    Works for one ROOT many input files, loads one in 2 seconds (decent speed).
+    All inputs from all detectors in one tensor.
+    """
+
+    def __init__(self,
+                 rootfile,nametree,
+                 list_inputs,list_outputs,
+                 valDigi,
+                 InOut_dim):
+        """
+        ROOT TTree of primary vtx study, tests, and configured with .yaml file
+        (see configs/experiment, or in this case 00-FirstCodeTests/testing_vtx")
+        """
+        start=timer()
+
+        self.rootfilename=rootfile
+        self.tree=nametree
+        self.MLIn=list_inputs
+        self.MLOut = list_outputs
+        self.VtxZDigi=valDigi
+
+        self.Br_inputs=uproot.concatenate(
+            (f"{file}:{self.tree}" for file in self.rootfilename),
+            expressions=self.MLIn,
+            library="ak"
+        )
+        self.Br_outputs=uproot.concatenate(
+            (f"{file}:{self.tree}" for file in self.rootfilename),
+            expressions=self.MLOut,
+            library="ak"
+        )
+
+        self.InOut_dim = InOut_dim[0]
+        self.InOut_dimOffset = InOut_dim[1]
+        self.totIn_dim = sum(InOut_dim[0][:-1])
+        self.totOut_dim = InOut_dim[0][-1]
+
+        length=len(self.Br_inputs)
+
+        #self.sampleIn = torch.zeros([length, 150])
+        # self.sampleOut = torch.zeros([len(self.Br_inputs), self.totOut_dim])
+
+        values_only = []
+        values_only_out= []
+        if len(self.MLOut) > 1:
+            arr_out = ak.to_list(self.Br_outputs[:][self.MLOut[0:3]])
+            arr=ak.to_list(self.Br_inputs)
+            for event, event_out in zip(arr,arr_out):
+                temp_list=list(event.values())
+                temp_list_out = list(event_out.values())
+                tempXout = temp_list_out[0]
+                tempYout = temp_list_out[1]
+                if len(self.VtxZDigi) == 2:
+                    tempZout = (temp_list_out[2] - self.VtxZDigi[0]) / self.VtxZDigi[1]
+                else:
+                    Zbin = temp_list_out[2]
+                    tempZout = ((Zbin-self.VtxZDigi[0])//self.VtxZDigi[1])*self.VtxZDigi[1]+np.random.normal(0,self.VtxZDigi[1]*0.1,Zbin.shape[0])
+
+                values_only_out.append([float(tempXout),float(tempYout),float(tempZout)])
+
+                dim_list = len(temp_list)
+                temp_val = []
+                for i_e in range(dim_list//3):
+                    tempX = np.array(temp_list[i_e*3]) - tempXout
+                    tempY = np.array(temp_list[i_e*3+1]) - tempYout
+
+                    temp_val.append(list(zip(tempX.tolist(),tempY.tolist(),temp_list[i_e*3+2])))
+                    values_only.append(temp_val)
+
+
+            self.sampleOut=torch.tensor(values_only_out,dtype=torch.float32)
+
+        else:
+            arr=ak.to_list(self.Br_inputs)
+            for event in arr:
+                temp_list=list(event.values())
+                dim_list = len(temp_list)
+                temp_val = []
+                for i_e in range(dim_list//3):
+                    temp_val.append(list(zip(temp_list[i_e*3],temp_list[i_e*3+1],temp_list[i_e*3+2])))
+                    values_only.append(temp_val)
+
+
+            if len(self.VtxZDigi) == 2:
+                self.sampleOut=torch.tensor(self.Br_outputs[:][self.MLOut[0]]-self.VtxZDigi[0],dtype=torch.float32)/self.VtxZDigi[1]
+            else:
+
+                Zbin = self.Br_outputs[:][self.MLOut[0]].to_numpy()
+                arr2 = ((Zbin-self.VtxZDigi[0])//self.VtxZDigi[1])*self.VtxZDigi[1]+np.random.normal(0,self.VtxZDigi[1]*0.1,Zbin.shape[0])
+                self.sampleOut = torch.tensor(arr2,dtype=torch.float32)
+
+
+
+        self.lengths = np.array([
+            [len(sublist) for sublist in event]  # Lengths for each event
+            for event in values_only  # Iterate over events
+            ],dtype='float')
+
+        #max_le = np.max(self.lengths)
+
+
+
+        end=timer()
+        print(f"Data loaded in: {end-start:.2f} seconds, trying 3D point NestedTensor config for {length} In Samples")
+
+        nested_batch = []
+        pos_batch = []
+
+        for ievent in values_only:
+            tensors = [torch.tensor(seq,dtype=torch.float32) for i_s,seq in enumerate(ievent)]
+            pos = [torch.tensor([i_t]*len(tt),dtype=torch.int32) for i_t,tt in enumerate(tensors)]
+            nested_batch.append(torch.concat(tensors))
+            pos_batch.append(torch.concat(pos))
+
+        self.sampleIn = nested_batch
+        self.sampleInPos = pos_batch
+        end=timer()
+
+        self.nfiles=len(self.rootfilename)
+        self.ninputs=len(self.sampleIn[0])
+
+        print(f"Flat config solved for {self.nfiles} files of length {self.ninputs} in {end-start:.2f} seconds")
+
+    def __len__(self):
+        return len(self.Br_inputs)
+
+    def __getitem__(self, idx:int):
+        return [[self.sampleIn[idx], self.sampleInPos[idx]], self.sampleOut[idx]]
+
+    
 class RootPvtxIndexFull_Multiple_Files_RZPoint_NestedTensor(Dataset):
     """
     Works for one ROOT many input files, loads one in 2 seconds (decent speed).
@@ -339,16 +489,26 @@ class RootPvtxIndexFull_Multiple_Files_RZPoint_NestedTensor(Dataset):
         # self.sampleOut = torch.zeros([len(self.Br_inputs), self.totOut_dim])
 
 
-        arr_out = self.Br_outputs[:][self.MLOut[0]]
+        arr_out = ak.to_list(self.Br_outputs[:][self.MLOut[0:3]])
 
         arr=ak.to_list(self.Br_inputs)
         values_only = []
-        for event in arr:
+        values_only_out = []
+        for event,event_out in zip(arr,arr_out):
             temp_list=list(event.values())
+            temp_list_out = list(event_out.values())
+            tempR = math.sqrt(temp_list_out[0]*temp_list_out[0]+temp_list_out[1]*temp_list_out[1])
+            values_only_out.append([tempR,temp_list_out[2] ] )
             dim_list = len(temp_list)
             temp_val = []
             for i_e in range(dim_list//3):
-                temp_val.append(list(zip(math.sqrt(temp_list[i_e*3]*temp_list[i_e*3]+temp_list[i_e*3+1]*temp_list[i_e*3+1]),temp_list[i_e*3+2])))
+                tempX = np.array(temp_list[i_e*3])
+                tempY = np.array(temp_list[i_e*3+1])
+#                print("#",i_e," ",tempX.shape,tempY.shape)
+ #               print(tempX)
+  #              print(tempY)
+                tempR2 = np.hypot(tempX,tempY) - tempR
+                temp_val.append(list(zip(tempR2.tolist(), temp_list[i_e*3+2])))
 
             values_only.append(temp_val)
 
@@ -360,12 +520,12 @@ class RootPvtxIndexFull_Multiple_Files_RZPoint_NestedTensor(Dataset):
         #max_le = np.max(self.lengths)
 
         if len(self.VtxZDigi) == 2:
-            self.sampleOut=torch.tensor(self.Br_outputs[:][self.MLOut[0]]-self.VtxZDigi[0],dtype=torch.float32)/self.VtxZDigi[1]
+            self.sampleOut=(torch.tensor(values_only_out,dtype=torch.float32)-torch.tensor([0,self.VtxZDigi[0]])) / torch.tensor([1,self.VtxZDigi[1]])
         else:
-            Zbin = self.Br_outputs[:][self.MLOut[0]].to_numpy()
+            Zbin = np.array(values_only_out)#self.Br_outputs[:][self.MLOut[0]].to_numpy()
             off = self.VtxZDigi[2]/3.
             scale = self.VtxZDigi[2]/2.
-            arr2 = ((Zbin-self.VtxZDigi[0])//self.VtxZDigi[1])*self.VtxZDigi[1]/scale+np.random.normal(0,self.VtxZDigi[1]*0.1/scale,Zbin.shape[0])+off
+            arr2 = ((Zbin-[0,self.VtxZDigi[0]]) // [1,self.VtxZDigi[1]])*[1.,self.VtxZDigi[1]/scale]+[0,np.random.normal(0,self.VtxZDigi[1]*0.1/scale,Zbin.shape[0])+off]
             self.sampleOut = torch.tensor(arr2,dtype=torch.float32)
 
 
@@ -736,6 +896,11 @@ def Nested_collate(batch):
     inputs1, inputs2 = list(zip(*inputs))
     return [[torch.nested.nested_tensor( inputs1,layout=torch.jagged), torch.nested.nested_tensor(inputs2,layout=torch.jagged)], torch.tensor(target).unsqueeze(1)]
 
+def Nested_collate_NDimTarget(batch):
+    inputs, target = list(zip(*batch))
+    inputs1, inputs2 = list(zip(*inputs))
+    return [[torch.nested.nested_tensor( inputs1,layout=torch.jagged), torch.nested.nested_tensor(inputs2,layout=torch.jagged)], torch.stack(target)]
+
 
 class PvtxDataModule(L.LightningDataModule):
     """
@@ -843,6 +1008,25 @@ class PvtxDataModule(L.LightningDataModule):
 
             self.collect_fn = Nested_collate
 
+        if self.dataset=="3DPointInAndOutNestedTensor":
+            self.ROOTDataset=RootPvtxIndexFull_Multiple_Files_3DPoint_NestedTensor(self.rootfile,
+                                                                                   self.nametree,
+                                                                                   self.list_inputs,
+                                                                                   self.list_outputs,
+                                                                                   self.valDigi,
+                                                                                   self.InOut_dim)
+
+            self.collect_fn = Nested_collate_NDimTarget
+
+        if self.dataset=="RZPointNestedTensor":
+            self.ROOTDataset=RootPvtxIndexFull_Multiple_Files_RZPoint_NestedTensor(self.rootfile,
+                                                                                   self.nametree,
+                                                                                   self.list_inputs,
+                                                                                   self.list_outputs,
+                                                                                   self.valDigi,
+                                                                                   self.InOut_dim)
+
+            self.collect_fn = Nested_collate_NDimTarget
         
             
     def setup(self, stage=None):
